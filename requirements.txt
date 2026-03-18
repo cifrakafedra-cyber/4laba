@@ -3,3 +3,14 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 python-dotenv==1.0.0
+# Существующие зависимости
+python-telegram-bot==20.7
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+python-dotenv==1.0.0
+
+# Линтинг и форматирование (опционально)
+flake8==6.1.0
+black==23.12.1
+isort==5.13.2

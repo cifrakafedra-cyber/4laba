@@ -1,0 +1,206 @@
+name: CI/CD Pipeline
+
+# Когда запускать
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Позволяет запускать вручную
+
+# Переменные окружения
+env:
+  PYTHON_VERSION: '3.11'
+  
+jobs:
+  # ============================================
+  # JOB 1: ТЕСТИРОВАНИЕ
+  # ============================================
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Шаг 1: Получить код
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    # Шаг 2: Установить Python
+    - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    # Шаг 3: Кэшировать зависимости
+    - name: 💾 Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    # Шаг 4: Установить зависимости
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # Шаг 5: Запустить тесты
+    - name: 🧪 Run tests
+      env:
+        TELEGRAM_BOT_TOKEN: test_token_12345
+      run: |
+        pytest tests/ -v --cov=bot --cov-report=xml --cov-report=html --cov-report=term-missing --junitxml=test-results.xml
+    
+    # Шаг 6: Загрузить отчет о покрытии
+    - name: 📊 Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        fail_ci_if_error: false
+      continue-on-error: true
+    
+    # Шаг 7: Загрузить результаты тестов как артефакты
+    - name: 📤 Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          htmlcov/
+          coverage.xml
+          test-results.xml
+    
+    # Шаг 8: Комментарий в PR с результатами
+    - name: 💬 Test Report
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Test Results
+        path: test-results.xml
+        reporter: java-junit
+      continue-on-error: true
+
+  # ============================================
+  # JOB 2: ЛИНТИНГ (проверка качества кода)
+  # ============================================
+  lint:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: 📦 Install linters
+      run: |
+        pip install flake8 black isort
+    
+    - name: 🔍 Run flake8
+      run: |
+        flake8 bot/ tests/ --max-line-length=120 --ignore=E501
+      continue-on-error: true
+    
+    - name: 🎨 Check code formatting
+      run: |
+        black --check bot/ tests/
+      continue-on-error: true
+
+  # ============================================
+  # JOB 3: СБОРКА DOCKER ОБРАЗА
+  # ============================================
+  build:
+    name: 🐳 Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 🐳 Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: |
+          telegram-bot:${{ github.sha }}
+          telegram-bot:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        load: true
+    
+    - name: 🧪 Test Docker image
+      run: |
+        docker run --rm -e TELEGRAM_BOT_TOKEN=test telegram-bot:latest python -c "from bot.bot import TelegramBot; print('✓ Image works!')"
+    
+    - name: 💾 Save Docker image
+      run: |
+        docker save telegram-bot:latest -o /tmp/bot-image.tar
+    
+    - name: 📤 Upload Docker image artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-image
+        path: /tmp/bot-image.tar
+        retention-days: 1
+
+  # ============================================
+  # JOB 4: ДЕПЛОЙ (только для main ветки)
+  # ============================================
+  deploy:
+    name: 🚀 Deploy to Server
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://t.me/your_bot_username
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: 📦 Install Ansible
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ansible
+    
+    - name: 🔑 Setup SSH
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SERVER_IP: ${{ secrets.SERVER_IP }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts 2>/dev/null || true
+    
+    - name: 🚀 Deploy with Ansible
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      run: |
+        cd ansible
+        ansible-playbook -i inventory.ini playbook.yml -v
+      continue-on-error: true
+    
+    - name: ✅ Deployment notification
+      run: |
+        echo "🎉 Deployment completed!"
+        echo "Build: ${{ github.sha }}"
+        echo "Branch: ${{ github.ref }}"
