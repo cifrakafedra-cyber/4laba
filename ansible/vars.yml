@@ -1,0 +1,5 @@
+---
+project_name: telegram-bot
+project_path: /opt/telegram-bot
+bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') }}"
+ansible_user_id: "{{ lookup('env', 'USER') }}"

@@ -1,0 +1,111 @@
+---
+- name: Deploy Telegram Bot Locally
+  hosts: telegram_bot_servers
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+          - python3-pip
+          - rsync
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Add current user to docker group
+      user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: yes
+      when: ansible_connection != 'local'
+
+    - name: Create project directory
+      file:
+        path: "{{ project_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy project files
+      synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ project_path }}/"
+        delete: no
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=.venv"
+          - "--exclude=ansible"
+
+    - name: Create .env file
+      copy:
+        content: "TELEGRAM_BOT_TOKEN={{ bot_token }}\n"
+        dest: "{{ project_path }}/.env"
+        mode: '0600'
+
+    - name: Stop existing containers
+      shell: docker-compose down
+      args:
+        chdir: "{{ project_path }}"
+      ignore_errors: yes
+
+    - name: Build Docker image
+      shell: docker-compose build
+      args:
+        chdir: "{{ project_path }}"
+
+    - name: Run tests
+      shell: docker-compose --profile test run --rm test
+      args:
+        chdir: "{{ project_path }}"
+      register: test_result
+      ignore_errors: yes
+
+    - name: Display test results
+      debug:
+        var: test_result.stdout_lines
+
+    - name: Fail if tests failed
+      fail:
+        msg: "Tests failed!"
+      when: test_result.rc != 0
+
+    - name: Start bot container
+      shell: docker-compose up -d
+      args:
+        chdir: "{{ project_path }}"
+
+    - name: Wait for bot to start
+      pause:
+        seconds: 5
+
+    - name: Check bot status
+      shell: docker-compose ps
+      args:
+        chdir: "{{ project_path }}"
+      register: bot_status
+
+    - name: Display bot status
+      debug:
+        var: bot_status.stdout_lines
+
+    - name: Show bot logs
+      shell: docker-compose logs --tail=20 telegram-bot
+      args:
+        chdir: "{{ project_path }}"
+      register: bot_logs
+
+    - name: Display bot logs
+      debug:
+        var: bot_logs.stdout_lines
